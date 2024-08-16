@@ -1,0 +1,63 @@
+# Test ssh connectivity through ssm
+name: Test SSH Connectivity
+
+on:
+  push:
+    branches:
+      - DEVOPS-2881-test-ssh-connectivity-ec2
+  workflow_dispatch:
+
+jobs:
+  setup:
+    name: Setup and configure AWS credentials
+    permissions:
+      id-token: write
+      contents: write
+    environment: dev
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Code Repository
+        uses: actions/checkout@v3
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-region: eu-west-1
+          role-to-assume: arn:aws:iam::657556092833:role/midendev-GithubActionsRole
+          role-session-name: GithubActionsSession
+
+      - name: Execute ssh command
+        id: run_ssm_command
+        run: |
+          COMMAND_ID=$(aws ssm send-command \
+            --instance-ids i-0d50212756bccc552 \
+            --document-name "AWS-RunShellScript" \
+            --parameters '{"commands":["ls -lrt /home/ubuntu"]}' \
+            --output text \
+            --query "Command.CommandId")
+          echo "command_id=$COMMAND_ID" >> $GITHUB_OUTPUT
+
+      - name: Check command status and retrieve output
+        run: |
+          sleep 3
+          STATUS=$(aws ssm list-command-invocations \
+              --command-id ${{ steps.run_ssm_command.outputs.command_id }} \
+              --details \
+              --query "CommandInvocations[0].Status" \
+              --output text)
+          echo "Command Status: $STATUS"
+      
+          if [ "$STATUS" = "Success" ]; then
+              OUTPUT=$(aws ssm list-command-invocations \
+              --command-id ${{ steps.run_ssm_command.outputs.command_id }} \
+              --details \
+              --query "CommandInvocations[0].CommandPlugins[0].Output" \
+              --output text)
+              echo "Command Output: $OUTPUT"
+          else
+              echo "Command failed with status: $STATUS"
+              exit 1
+          fi
+
+
+

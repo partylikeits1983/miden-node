@@ -1,12 +1,5 @@
-# Deploy the miden node for testnet and devnet.
-#
-# testnet is deployed manually using `workflow_dispatch`, and devnet is deployed
-# on every push to the `next` branch.
-#
-# All previous node data is removed during deployment i.e. an update restarts the
-# node from genesis again.
+# Test ssh connectivity through ssm
 name: Node deployment
-
 on:
   workflow_dispatch:
   push:
