@@ -56,7 +56,7 @@ jobs:
       #     role-session-name: GithubActionsSession
 
       - name: Configure devnet AWS credentials
-        # if: env.NETWORK == 'devnet'
+        if: env.NETWORK == 'devnet'
         uses: aws-actions/configure-aws-credentials@v4
         with:
           aws-region: eu-west-1
@@ -67,7 +67,7 @@ jobs:
         id: stop_services
         run: |
           COMMAND_ID=$(aws ssm send-command \
-            --instance-ids i-0d50212756bccc552 \
+            --instance-ids ${{ env.INSTANCE_ID }} \
             --document-name "AWS-RunShellScript" \
             --parameters '{"commands":["sudo systemctl stop miden-node", "sudo systemctl stop miden-faucet"]}' \
             --output text \
