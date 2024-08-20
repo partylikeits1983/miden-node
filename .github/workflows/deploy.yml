@@ -66,13 +66,10 @@ jobs:
       - name: Stop services
         run: |
           aws ssm send-command \
-            --instance-ids ${{ env.INSTANCE_ID }} \
+            --instance-ids i-0d50212756bccc552\
             --document-name "AWS-RunShellScript" \
             --comment "Stop Miden services" \
-            --parameters '{"commands":[
-              "sudo systemctl stop miden-node",
-              "sudo systemctl stop miden-faucet"
-            ]}' \
+            --parameters '{"commands":["sudo systemctl stop miden-node","sudo systemctl stop miden-faucet"]}' \
             --output text
 
       - name: Install prerequisites
