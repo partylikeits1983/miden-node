@@ -69,7 +69,7 @@ jobs:
             --instance-ids ${{ env.INSTANCE_ID }} \
             --document-name "AWS-RunShellScript" \
             --comment "Stop Miden services" \
-            --parameters commands='{"commands":[
+            --parameters '{"commands":[
               "sudo systemctl stop miden-node",
               "sudo systemctl stop miden-faucet"
             ]}' \
