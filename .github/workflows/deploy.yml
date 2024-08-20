@@ -81,13 +81,13 @@ jobs:
             --document-name "AWS-RunShellScript" \
             --comment "Install prerequisites" \
             --parameters commands='[
-              "sudo yum update -y",
-              "sudo yum install -y git gcc openssl-devel bzip2-devel libffi-devel make",
-              "sudo yum groupinstall -y \"Development Tools\"",
+              "sudo apt-get update -y",
+              "sudo apt-get install -y git gcc openssl bzip2 libffi make",
+              "sudo apt-get groupinstall -y \"Development Tools\"",
               "curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y",
               "source $HOME/.cargo/env",
               "rustup update",
-              "sudo yum install -y clang cmake"
+              "sudo apt-get install -y clang cmake"
             ]' \
             --output text
 
