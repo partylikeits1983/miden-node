@@ -614,7 +614,7 @@ fn test_block_witness_validation_inconsistent_nullifiers() {
     let nullifier_1 = batches[0].produced_nullifiers().next().unwrap();
     let nullifier_2 = batches[1].produced_nullifiers().next().unwrap();
     let nullifier_3 =
-        Digest::from([101_u32.into(), 102_u32.into(), 103_u32.into(), 104_u32.into()]).into();
+        Digest::from([Felt::from(101_u32), 102_u32.into(), 103_u32.into(), 104_u32.into()]).into();
 
     let block_inputs_from_store: BlockInputs = {
         let block_header = BlockHeader::mock(0, None, None, &[]);

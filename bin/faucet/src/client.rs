@@ -1,7 +1,8 @@
 use std::{cell::RefCell, rc::Rc, time::Duration};
 
 use miden_lib::{
-    accounts::faucets::create_basic_fungible_faucet, notes::create_p2id_note, AuthScheme,
+    accounts::faucets::create_basic_fungible_faucet, notes::create_p2id_note,
+    transaction::TransactionKernel, AuthScheme,
 };
 use miden_node_proto::generated::{
     requests::{GetBlockHeaderByNumberRequest, SubmitProvenTransactionRequest},
@@ -9,15 +10,14 @@ use miden_node_proto::generated::{
 };
 use miden_objects::{
     accounts::{Account, AccountDelta, AccountId, AccountStorageType, AuthSecretKey},
-    assembly::{ModuleAst, ProgramAst},
     assets::{FungibleAsset, TokenSymbol},
     crypto::{
         dsa::rpo_falcon512::SecretKey,
         merkle::{MmrPeaks, PartialMmr},
         rand::RpoRandomCoin,
     },
-    notes::{Note, NoteId, NoteType},
-    transaction::{ChainMmr, ExecutedTransaction, InputNotes, TransactionArgs},
+    notes::{Note, NoteExecutionHint, NoteId, NoteType},
+    transaction::{ChainMmr, ExecutedTransaction, InputNotes, TransactionArgs, TransactionScript},
     vm::AdviceMap,
     BlockHeader, Felt, Word,
 };
@@ -69,12 +69,8 @@ impl FaucetClient {
             secret.public_key().into(),
             AuthSecretKey::RpoFalcon512(secret),
         )]);
-        let mut executor =
-            TransactionExecutor::new(data_store.clone(), Some(Rc::new(authenticator)));
 
-        executor
-            .load_account(id)
-            .map_err(|err| FaucetError::InternalServerError(err.to_string()))?;
+        let executor = TransactionExecutor::new(data_store.clone(), Some(Rc::new(authenticator)));
 
         let mut rng = thread_rng();
         let coin_seed: [u64; 4] = rng.gen();
@@ -217,16 +213,6 @@ impl DataStore for FaucetDataStore {
         )
         .map_err(DataStoreError::InvalidTransactionInput)
     }
-
-    fn get_account_code(&self, account_id: AccountId) -> Result<ModuleAst, DataStoreError> {
-        let account = self.faucet_account.borrow();
-        if account_id != account.id() {
-            return Err(DataStoreError::AccountNotFound(account_id));
-        }
-
-        let module_ast = account.code().module().clone();
-        Ok(module_ast)
-    }
 }
 
 // HELPER FUNCTIONS
@@ -314,19 +300,18 @@ fn build_transaction_arguments(
     let tag = output_note.metadata().tag().inner();
     let aux = output_note.metadata().aux().inner();
 
-    let script = ProgramAst::parse(
-        &DISTRIBUTE_FUNGIBLE_ASSET_SCRIPT
+    let script = TransactionScript::compile(
+        DISTRIBUTE_FUNGIBLE_ASSET_SCRIPT
             .replace("{recipient}", &recipient)
+            .replace("{execution_hint}", &Felt::from(NoteExecutionHint::always()).to_string())
             .replace("{note_type}", &Felt::new(note_type as u64).to_string())
             .replace("{aux}", &Felt::new(aux).to_string())
             .replace("{tag}", &Felt::new(tag.into()).to_string())
             .replace("{amount}", &Felt::new(asset.amount()).to_string()),
+        vec![],
+        TransactionKernel::assembler(),
     )
     .expect("shipped MASM is well-formed");
-
-    let script = executor.compile_tx_script(script, vec![], vec![]).map_err(|err| {
-        FaucetError::InternalServerError(format!("Failed to compile script: {}", err))
-    })?;
 
     let mut transaction_args = TransactionArgs::new(Some(script), None, AdviceMap::new());
     transaction_args.extend_expected_output_notes(vec![output_note.clone()]);

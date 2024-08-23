@@ -13,7 +13,7 @@ use miden_objects::{
         Account, AccountCode, AccountDelta, AccountId, AccountStorage, AccountStorageDelta,
         AccountVaultDelta,
     },
-    assembly::{Assembler, ModuleAst},
+    assembly::Assembler,
     assets::{Asset, AssetVault, FungibleAsset, NonFungibleAsset, NonFungibleAssetDetails},
     block::{BlockAccountUpdate, BlockNoteIndex, BlockNoteTree},
     crypto::{hash::rpo::RpoDigest, merkle::MerklePath},
@@ -988,6 +988,5 @@ pub fn mock_account_code(assembler: &Assembler) -> AccountCode {
                 add
             end
             ";
-    let account_module_ast = ModuleAst::parse(account_code).unwrap();
-    AccountCode::new(account_module_ast, assembler).unwrap()
+    AccountCode::compile(account_code, Assembler::default()).unwrap()
 }

@@ -287,7 +287,7 @@ impl OutputNoteTracker {
 #[cfg(test)]
 mod tests {
     use miden_objects::notes::NoteInclusionProof;
-    use miden_processor::crypto::MerklePath;
+    
 
     use super::*;
     use crate::test_utils::{
@@ -405,7 +405,7 @@ mod tests {
         let txs = mock_proven_txs();
         let found_unauthenticated_notes = BTreeMap::from_iter([(
             mock_note(5).id(),
-            NoteInclusionProof::new(0, 0, MerklePath::default()).unwrap(),
+            NoteInclusionProof::new(0, 0, Default::default()).unwrap(),
         )]);
         let found_unauthenticated_notes = NoteAuthenticationInfo {
             note_proofs: found_unauthenticated_notes,
