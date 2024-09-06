@@ -12,7 +12,7 @@ use miden_lib::{
 use miden_node_store::genesis::GenesisState;
 use miden_node_utils::config::load_config;
 use miden_objects::{
-    accounts::{Account, AccountData, AccountStorageType, AccountType, AuthSecretKey},
+    accounts::{Account, AccountData, AccountStorageMode, AccountType, AuthSecretKey},
     assets::TokenSymbol,
     crypto::{
         dsa::rpo_falcon512::SecretKey,
@@ -208,10 +208,10 @@ fn parse_auth_inputs(
     }
 }
 
-fn parse_storage_mode(storage_mode: &str) -> Result<AccountStorageType> {
+fn parse_storage_mode(storage_mode: &str) -> Result<AccountStorageMode> {
     match storage_mode.to_lowercase().as_str() {
-        "on-chain" => Ok(AccountStorageType::OnChain),
-        "off-chain" => Ok(AccountStorageType::OffChain),
+        "on-chain" => Ok(AccountStorageMode::Public),
+        "off-chain" => Ok(AccountStorageMode::Private),
         mode => Err(anyhow!("The provided value for storage_type ({mode}) does not match the expected values (on-chain, off-chain)"))
     }
 }
@@ -279,8 +279,8 @@ mod tests {
             let a1 = AccountData::read(a1_file_path).unwrap();
 
             // assert that the accounts have the corresponding storage mode
-            assert!(!a0.account.is_on_chain());
-            assert!(a1.account.is_on_chain());
+            assert!(!a0.account.is_public());
+            assert!(a1.account.is_public());
 
             let genesis_file_contents = fs::read(genesis_dat_file_path).unwrap();
             let genesis_state = GenesisState::read_from_bytes(&genesis_file_contents).unwrap();
