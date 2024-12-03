@@ -5,8 +5,6 @@ use std::{
 
 // CONSTANTS
 // ================================================================================================
-
-const REPO_PROTO_DIR: &str = "../../proto";
 const CRATE_PROTO_DIR: &str = "proto";
 
 const DOC_COMMENT: &str =
@@ -71,10 +69,11 @@ fn main() -> io::Result<()> {
 
 /// Copies all .proto files from the root proto directory to the proto directory of this crate.
 fn copy_proto_files() -> io::Result<()> {
+    let proto_dir = format!("{}/proto", std::env::var("OUT_DIR").expect("OUT_DIR should be set"));
     let dest_dir: PathBuf = CRATE_PROTO_DIR.into();
 
     fs::create_dir_all(dest_dir.clone())?;
-    for entry in fs::read_dir(REPO_PROTO_DIR)? {
+    for entry in fs::read_dir(proto_dir)? {
         let entry = entry?;
         let ty = entry.file_type()?;
         if !ty.is_dir() {
