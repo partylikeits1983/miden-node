@@ -2,7 +2,7 @@
 
 ## v0.9.0 (TBD)
 
-
+- Added a check for batch and block proofs to be greater than the minimum security level (#780).
 
 ## v0.8.0 (2025-03-26)
 
