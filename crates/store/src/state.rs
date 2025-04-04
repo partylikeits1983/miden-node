@@ -78,11 +78,6 @@ impl Blockchain {
         block_number.into()
     }
 
-    /// Returns the chain length.
-    pub fn chain_length(&self) -> BlockNumber {
-        self.chain_tip().child()
-    }
-
     /// Returns the current peaks of the MMR.
     pub fn peaks(&self) -> MmrPeaks {
         self.0.peaks()
@@ -239,7 +234,9 @@ impl State {
 
         let header = block.header();
 
-        let tx_commitment = BlockHeader::compute_tx_commitment(block.transactions());
+        let tx_commitment = BlockHeader::compute_tx_commitment(
+            block.transactions().as_slice().iter().map(|tx| (tx.id(), tx.account_id())),
+        );
         if header.tx_commitment() != tx_commitment {
             return Err(InvalidBlockError::InvalidBlockTxCommitment {
                 expected: tx_commitment,
