@@ -1,28 +1,19 @@
-mod client;
 mod config;
-mod errors;
-mod handlers;
-mod state;
-mod store;
+mod faucet;
+mod rpc_client;
+mod server;
+mod types;
 
 #[cfg(test)]
 mod stub_rpc_api;
 
-use std::path::PathBuf;
+use std::{path::PathBuf, str::FromStr};
 
 use anyhow::Context;
-use axum::{
-    Router,
-    routing::{get, post},
-};
 use clap::{Parser, Subcommand};
-use client::initialize_faucet_client;
-use handlers::{get_background, get_favicon, get_index_css, get_index_html, get_index_js};
-use http::{HeaderValue, header};
+use faucet::Faucet;
 use miden_lib::{AuthScheme, account::faucets::create_basic_fungible_faucet};
-use miden_node_utils::{
-    config::load_config, crypto::get_rpo_random_coin, logging::OpenTelemetry, version::LongVersion,
-};
+use miden_node_utils::{config::load_config, crypto::get_rpo_random_coin, version::LongVersion};
 use miden_objects::{
     Felt,
     account::{AccountFile, AccountStorageMode, AuthSecretKey},
@@ -31,16 +22,12 @@ use miden_objects::{
 };
 use rand::{Rng, SeedableRng};
 use rand_chacha::ChaCha20Rng;
-use state::FaucetState;
-use tokio::net::TcpListener;
-use tower::ServiceBuilder;
-use tower_http::{cors::CorsLayer, set_header::SetResponseHeaderLayer, trace::TraceLayer};
-use tracing::info;
+use rpc_client::RpcClient;
+use server::Server;
+use tokio::sync::mpsc;
+use tracing_subscriber::{Layer, layer::SubscriberExt, util::SubscriberInitExt};
 
-use crate::{
-    config::{DEFAULT_FAUCET_ACCOUNT_PATH, FaucetConfig},
-    handlers::{get_metadata, get_tokens},
-};
+use crate::config::{DEFAULT_FAUCET_ACCOUNT_PATH, FaucetConfig};
 
 // CONSTANTS
 // =================================================================================================
@@ -94,8 +81,7 @@ pub enum Command {
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
-    miden_node_utils::logging::setup_tracing(OpenTelemetry::Disabled)
-        .context("failed to initialize logging")?;
+    setup_tracing();
 
     let cli = Cli::parse();
 
@@ -107,46 +93,36 @@ async fn run_faucet_command(cli: Cli) -> anyhow::Result<()> {
         Command::Start { config } => {
             let config: FaucetConfig =
                 load_config(config).context("failed to load configuration file")?;
-            let faucet_state = FaucetState::new(config.clone()).await?;
 
-            info!(target: COMPONENT, %config, "Initializing server");
+            let mut rpc_client =
+                RpcClient::connect_lazy(&config.node_url).context("failed to create RPC client")?;
+            let account_file = AccountFile::read(&config.faucet_account_path)
+                .context("failed to load faucet account from file")?;
 
-            let app = Router::new()
-                .route("/", get(get_index_html))
-                .route("/index.js", get(get_index_js))
-                .route("/index.css", get(get_index_css))
-                .route("/background.png", get(get_background))
-                .route("/favicon.ico", get(get_favicon))
-                .route("/get_metadata", get(get_metadata))
-                .route("/get_tokens", post(get_tokens))
-                .layer(
-                    ServiceBuilder::new()
-                        .layer(TraceLayer::new_for_http())
-                        .layer(SetResponseHeaderLayer::if_not_present(
-                            http::header::CACHE_CONTROL,
-                            HeaderValue::from_static("no-cache"),
-                        ))
-                        .layer(
-                            CorsLayer::new()
-                                .allow_origin(tower_http::cors::Any)
-                                .allow_methods(tower_http::cors::Any)
-                                .allow_headers([header::CONTENT_TYPE]),
-                        ),
-                )
-                .with_state(faucet_state);
+            let faucet = Faucet::load(account_file, &mut rpc_client).await?;
 
-            let socket_addr = config
-                .endpoint
-                .socket_addrs(|| None)?
-                .into_iter()
-                .next()
-                .with_context(|| format!("no sockets available on {}", config.endpoint))?;
-            let listener =
-                TcpListener::bind(socket_addr).await.context("failed to bind TCP listener")?;
+            // Maximum of 100 requests in-queue at once. Overflow is rejected for faster feedback.
+            let (tx_requests, rx_requests) = mpsc::channel(100);
 
-            info!(target: COMPONENT, endpoint = %config.endpoint, "Server started");
+            let server =
+                Server::new(faucet.faucet_id(), config.asset_amount_options.clone(), tx_requests);
 
-            axum::serve(listener, app).await.unwrap();
+            // Run both the client and the server concurrently.
+            // TODO: We probably want a more graceful shutdown.
+            let faucet =
+                async { faucet.run(rpc_client, rx_requests).await.context("faucet failed") };
+            let server =
+                async move { server.serve(config.endpoint).await.context("server failed") };
+            let mut tasks = tokio::task::JoinSet::new();
+            tasks.spawn(faucet);
+            tasks.spawn(server);
+            // SAFETY: join_next returns None if there are no tasks, and we definitely have tasks.
+            tasks
+                .join_next()
+                .await
+                .unwrap()
+                .context("failed to join task")?
+                .context("a server task ended unexpectedly")?;
         },
 
         Command::CreateFaucetAccount {
@@ -161,7 +137,13 @@ async fn run_faucet_command(cli: Cli) -> anyhow::Result<()> {
             let config: FaucetConfig =
                 load_config(config_path).context("failed to load configuration file")?;
 
-            let (_, root_block_header, _) = initialize_faucet_client(&config).await?;
+            let mut rpc_client =
+                RpcClient::connect_lazy(&config.node_url).context("failed to create RPC client")?;
+
+            let genesis_header = rpc_client
+                .get_genesis_header()
+                .await
+                .context("fetching genesis header from the node")?;
 
             let current_dir =
                 std::env::current_dir().context("failed to open current directory")?;
@@ -172,7 +154,7 @@ async fn run_faucet_command(cli: Cli) -> anyhow::Result<()> {
 
             let (account, account_seed) = create_basic_fungible_faucet(
                 rng.random(),
-                (&root_block_header).try_into().context("failed to create anchor block")?,
+                (&genesis_header).try_into().context("failed to create anchor block")?,
                 TokenSymbol::try_from(token_symbol.as_str())
                     .context("failed to parse token symbol")?,
                 *decimals,
@@ -187,11 +169,11 @@ async fn run_faucet_command(cli: Cli) -> anyhow::Result<()> {
                 AccountFile::new(account, Some(account_seed), AuthSecretKey::RpoFalcon512(secret));
 
             let output_path = current_dir.join(output_path);
-            account_data
-                .write(&output_path)
-                .context("failed to write account data to file")?;
+            account_data.write(&output_path).with_context(|| {
+                format!("failed to write account data to file: {}", output_path.display())
+            })?;
 
-            println!("Faucet account file successfully created at: {output_path:?}");
+            println!("Faucet account file successfully created at: {}", output_path.display());
         },
 
         Command::Init { config_path, faucet_account_path } => {
@@ -218,9 +200,37 @@ async fn run_faucet_command(cli: Cli) -> anyhow::Result<()> {
     Ok(())
 }
 
-/// The static website files embedded by the build.rs script.
-mod static_resources {
-    include!(concat!(env!("OUT_DIR"), "/generated.rs"));
+fn setup_tracing() {
+    use tracing::level_filters::LevelFilter;
+    use tracing_subscriber::{
+        EnvFilter,
+        filter::{FilterExt, Targets},
+    };
+
+    let fmt = tracing_subscriber::fmt::layer().pretty();
+
+    let filter = match std::env::var(EnvFilter::DEFAULT_ENV) {
+        Ok(rust_log) => FilterExt::boxed(
+            EnvFilter::from_str(&rust_log)
+                .expect("RUST_LOG should contain a valid filter configuration"),
+        ),
+        Err(std::env::VarError::NotUnicode(_)) => panic!("RUST_LOG contained non-unicode"),
+        Err(std::env::VarError::NotPresent) => {
+            FilterExt::boxed(
+                Targets::new()
+                    .with_default(LevelFilter::INFO)
+                    // axum Extractor rejections are logged at TRACE and are useful for
+                    // errors.
+                    .with_target("axum::rejection", LevelFilter::TRACE)
+                    // Prover and execution log a bunch at INFO level. Disable these.
+                    .with_target("winter_prover", LevelFilter::WARN)
+                    .with_target("miden_processor", LevelFilter::WARN)
+                    .with_target("miden_prover", LevelFilter::WARN),
+            )
+        },
+    };
+
+    tracing_subscriber::registry().with(fmt.with_filter(filter)).init();
 }
 
 /// Generates [`LongVersion`] using the metadata generated by build.rs.
