@@ -18,6 +18,7 @@
 - [BUGFIX] Prevents duplicated note IDs (#842).
 - Added a required Proof-of-Work in the faucet to request tokens (#831).
 - Added an optional API key request parameter to skip PoW in faucet (#839).
+- Block producer now emits network note information (#805).
 
 ## v0.8.2 (2025-05-04)
 
@@ -53,7 +54,6 @@
 - Optimized database by adding missing indexes (#728).
 - Added support for `Content-type` header in `get_tokens` endpoint of the faucet (#754).
 - Block frequency is now configurable (#750).
-- Batch frequency is now configurable (#750).
 
 ### Changes
 
