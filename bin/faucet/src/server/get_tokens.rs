@@ -1,4 +1,10 @@
-use std::convert::Infallible;
+use std::{
+    convert::Infallible,
+    sync::{
+        Arc,
+        atomic::{AtomicUsize, Ordering},
+    },
+};
 
 use axum::{
     extract::{Query, State},
@@ -45,6 +51,7 @@ pub struct RawMintRequest {
     pub asset_amount: u64,
     pub pow_seed: Option<String>,
     pub pow_solution: Option<u64>,
+    pub pow_difficulty: Option<usize>,
     pub server_signature: Option<String>,
     pub server_timestamp: Option<u64>,
     pub api_key: Option<String>,
@@ -170,9 +177,9 @@ impl RawMintRequest {
         }
 
         if let Ok(pow_parameters) = PowParameters::try_from(&self) {
-            pow_parameters.check_pow_solution(&server.challenge_cache)?;
+            pow_parameters.check_pow_solution(&server.pow.challenge_cache)?;
             pow_parameters.check_server_timestamp()?;
-            pow_parameters.check_server_signature(&server.pow_salt)?;
+            pow_parameters.check_server_signature(&server.pow.salt)?;
         } else {
             return Err(InvalidRequest::MissingPowParameters);
         }
@@ -181,10 +188,37 @@ impl RawMintRequest {
     }
 }
 
+/// Guard that automatically tracks the lifecycle of an active request.
+///
+/// An "active request" represents any request currently being handled by the system,
+/// whether it's being validated, queued, or processed.
+struct ActiveRequestGuard {
+    active_count: Arc<AtomicUsize>,
+}
+
+impl ActiveRequestGuard {
+    fn new(active_count: &Arc<AtomicUsize>) -> Self {
+        active_count.fetch_add(1, Ordering::Relaxed);
+        Self { active_count: active_count.clone() }
+    }
+}
+
+impl Drop for ActiveRequestGuard {
+    fn drop(&mut self) {
+        self.active_count.fetch_sub(1, Ordering::Relaxed);
+    }
+}
+
 pub async fn get_tokens(
     State(server): State<Server>,
     Query(request): Query<RawMintRequest>,
 ) -> Sse<impl Stream<Item = Result<Event, Infallible>>> {
+    // Track this as an active request for the entire duration
+    let _active_guard = ActiveRequestGuard::new(&server.active_requests);
+
+    let current_active_requests = server.active_requests.load(Ordering::Relaxed);
+    server.pow.adjust_difficulty(current_active_requests);
+
     // Response channel with buffer size 5 since there are currently 5 possible updates
     let (tx_result_notifier, rx_result) = mpsc::channel(5);
 
@@ -214,4 +248,86 @@ pub async fn get_tokens(
 
     let stream = ReceiverStream::new(rx_result);
     Sse::new(stream).keep_alive(KeepAlive::default())
+}
+
+#[cfg(test)]
+mod tests {
+    use std::sync::{
+        Arc,
+        atomic::{AtomicUsize, Ordering},
+    };
+
+    use super::*;
+
+    #[test]
+    fn test_active_request_guard_increments_on_creation() {
+        let active_count = Arc::new(AtomicUsize::new(0));
+
+        assert_eq!(active_count.load(Ordering::Relaxed), 0);
+
+        let _guard = ActiveRequestGuard::new(&active_count);
+        assert_eq!(active_count.load(Ordering::Relaxed), 1);
+    }
+
+    #[test]
+    fn test_active_request_guard_decrements_on_drop() {
+        let active_count = Arc::new(AtomicUsize::new(0));
+
+        {
+            let _guard = ActiveRequestGuard::new(&active_count);
+            assert_eq!(active_count.load(Ordering::Relaxed), 1);
+        } // Guard dropped here
+
+        assert_eq!(active_count.load(Ordering::Relaxed), 0);
+    }
+
+    #[test]
+    fn test_multiple_active_request_guards() {
+        let active_count = Arc::new(AtomicUsize::new(0));
+
+        let guard1 = ActiveRequestGuard::new(&active_count);
+        assert_eq!(active_count.load(Ordering::Relaxed), 1);
+
+        let guard2 = ActiveRequestGuard::new(&active_count);
+        assert_eq!(active_count.load(Ordering::Relaxed), 2);
+
+        let guard3 = ActiveRequestGuard::new(&active_count);
+        assert_eq!(active_count.load(Ordering::Relaxed), 3);
+
+        drop(guard2);
+        assert_eq!(active_count.load(Ordering::Relaxed), 2);
+
+        drop(guard1);
+        assert_eq!(active_count.load(Ordering::Relaxed), 1);
+
+        drop(guard3);
+        assert_eq!(active_count.load(Ordering::Relaxed), 0);
+    }
+
+    #[test]
+    fn test_active_request_guard_behavior_on_error_scenarios() {
+        let active_count = Arc::new(AtomicUsize::new(0));
+
+        // Simulate validation error - active guard created
+        {
+            let _active_guard = ActiveRequestGuard::new(&active_count);
+            assert_eq!(active_count.load(Ordering::Relaxed), 1);
+
+            // Validation fails, request doesn't proceed
+            // Guard will be dropped when going out of scope
+        }
+
+        assert_eq!(active_count.load(Ordering::Relaxed), 0);
+
+        // Simulate queue full error - active guard created
+        {
+            let _active_guard = ActiveRequestGuard::new(&active_count);
+            assert_eq!(active_count.load(Ordering::Relaxed), 1);
+
+            // Queue is full, request doesn't proceed
+            // Guard will be dropped when going out of scope
+        }
+
+        assert_eq!(active_count.load(Ordering::Relaxed), 0);
+    }
 }
