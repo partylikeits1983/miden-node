@@ -2,7 +2,7 @@ document.addEventListener('DOMContentLoaded', function () {
     const faucetIdElem = document.getElementById('faucet-id');
     const privateButton = document.getElementById('button-private');
     const publicButton = document.getElementById('button-public');
-    const accountIdInput = document.getElementById('account-id');
+    const accountAddressInput = document.getElementById('account-address');
     const errorMessage = document.getElementById('error-message');
     const info = document.getElementById('info');
     const importCommand = document.getElementById('import-command');
@@ -55,13 +55,13 @@ document.addEventListener('DOMContentLoaded', function () {
         errorMessage.style.visibility = 'hidden';
     }
 
-    function validateAccountId(accountId) {
-        if (!accountId) {
+    function validateAccountAddress(accountAddress) {
+        if (!accountAddress) {
             showError("Account address is required.");
             return false;
         }
 
-        const isValidFormat = /^(0x[0-9a-fA-F]{30}|[a-z]{1,4}1[a-z0-9]{32})$/i.test(accountId);
+        const isValidFormat = /^(0x[0-9a-fA-F]{30}|[a-z]{1,4}1[a-z0-9]{32})$/i.test(accountAddress);
         if (!isValidFormat) {
             showError("Invalid Account address.");
             return false;
@@ -80,10 +80,10 @@ document.addEventListener('DOMContentLoaded', function () {
     }
 
     async function handleButtonClick(isPrivateNote) {
-        let accountId = accountIdInput.value.trim();
+        let accountAddress = accountAddressInput.value.trim();
         hideError();
 
-        if (!validateAccountId(accountId)) {
+        if (!validateAccountAddress(accountAddress)) {
             return;
         }
 
@@ -113,7 +113,7 @@ document.addEventListener('DOMContentLoaded', function () {
 
         // Build query parameters for the request
         const params = {
-            account_id: accountId,
+            account_id: accountAddress,
             is_private_note: isPrivateNote,
             asset_amount: parseInt(assetSelect.value),
             pow_seed: powData.seed,
