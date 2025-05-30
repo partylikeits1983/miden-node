@@ -294,8 +294,7 @@ mod test {
     use url::Url;
 
     use crate::{
-        API_KEY_PREFIX, Cli, config::FaucetConfig, generate_api_key, run_faucet_command,
-        stub_rpc_api::serve_stub,
+        API_KEY_PREFIX, Cli, config::FaucetConfig, run_faucet_command, stub_rpc_api::serve_stub,
     };
 
     /// This test starts a stub node, a faucet connected to the stub node, and a chromedriver
@@ -326,6 +325,23 @@ mod test {
 
         // Verify all requests are successful
         assert!(failed_requests.as_array().unwrap().is_empty());
+
+        // Inject JavaScript to capture sse events
+        let capture_events_script = r"
+            window.capturedEvents = [];
+            const original = EventSource.prototype.addEventListener;
+            EventSource.prototype.addEventListener = function(type, listener) {
+                const wrappedListener = function(event) {
+                    window.capturedEvents.push({
+                        type: type,
+                        data: event.data
+                    });
+                    return listener(event);
+                };
+                return original.call(this, type, wrappedListener);
+            };
+        ";
+        client.execute(capture_events_script, vec![]).await.unwrap();
 
         // Fill in the account address
         client
@@ -361,28 +377,11 @@ mod test {
             .await
             .unwrap();
 
-        // Inject JavaScript to capture sse events
-        let capture_events_script = r"
-            window.capturedEvents = [];
-            const original = EventSource.prototype.addEventListener;
-            EventSource.prototype.addEventListener = function(type, listener) {
-                const wrappedListener = function(event) {
-                    window.capturedEvents.push({
-                        type: type,
-                        data: event.data
-                    });
-                    return listener(event);
-                };
-                return original.call(this, type, wrappedListener);
-            };
-        ";
-        client.execute(capture_events_script, vec![]).await.unwrap();
-
         // Poll until minting is complete. We wait 10s and then poll every 2s for a max of
-        // 25 times.
+        // 55 times (total 2 mins).
         sleep(Duration::from_secs(10)).await;
         let mut captured_events: Vec<serde_json::Value> = vec![];
-        for _ in 0..25 {
+        for _ in 0..55 {
             let events = client
                 .execute("return window.capturedEvents;", vec![])
                 .await
@@ -423,13 +422,10 @@ mod test {
         let config_path = temp_dir().join("faucet.toml");
         let faucet_account_path = temp_dir().join("account.mac");
 
-        // We use an api key to avoid computation needed for pow
-        let api_key = generate_api_key();
         // Create config
         let config = FaucetConfig {
             node_url: stub_node_url,
             faucet_account_path: faucet_account_path.clone(),
-            api_keys: vec![api_key],
             ..FaucetConfig::default()
         };
         let config_as_toml_string = toml::to_string(&config).unwrap();
