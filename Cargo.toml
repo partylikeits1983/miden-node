@@ -24,7 +24,7 @@ homepage     = "https://polygon.technology/polygon-miden"
 license      = "MIT"
 readme       = "README.md"
 repository   = "https://github.com/0xMiden/miden-node"
-rust-version = "1.85"
+rust-version = "1.87"
 version      = "0.9.0"
 
 # Optimise the cryptography for faster tests involving account creation.
