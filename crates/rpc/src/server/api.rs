@@ -10,9 +10,10 @@ use miden_node_proto::{
             SyncNoteRequest, SyncStateRequest,
         },
         responses::{
-            CheckNullifiersByPrefixResponse, CheckNullifiersResponse, GetAccountDetailsResponse,
-            GetAccountProofsResponse, GetAccountStateDeltaResponse, GetBlockByNumberResponse,
-            GetBlockHeaderByNumberResponse, GetNotesByIdResponse, SubmitProvenTransactionResponse,
+            BlockProducerStatusResponse, CheckNullifiersByPrefixResponse, CheckNullifiersResponse,
+            GetAccountDetailsResponse, GetAccountProofsResponse, GetAccountStateDeltaResponse,
+            GetBlockByNumberResponse, GetBlockHeaderByNumberResponse, GetNotesByIdResponse,
+            RpcStatusResponse, StoreStatusResponse, SubmitProvenTransactionResponse,
             SyncNoteResponse, SyncStateResponse,
         },
         rpc::api_server,
@@ -22,14 +23,15 @@ use miden_node_proto::{
 };
 use miden_node_utils::tracing::grpc::OtelInterceptor;
 use miden_objects::{
-    Digest, MAX_NUM_FOREIGN_ACCOUNTS, MIN_PROOF_SECURITY_LEVEL, account::AccountId,
-    crypto::hash::rpo::RpoDigest, transaction::ProvenTransaction, utils::serde::Deserializable,
+    Digest, MAX_NUM_FOREIGN_ACCOUNTS, MIN_PROOF_SECURITY_LEVEL,
+    account::{AccountId, delta::AccountUpdateDetails},
+    crypto::hash::rpo::RpoDigest,
+    transaction::ProvenTransaction,
+    utils::serde::Deserializable,
 };
 use miden_tx::TransactionVerifier;
 use tonic::{
-    Request, Response, Status,
-    service::interceptor::InterceptedService,
-    transport::{Channel, Error},
+    Request, Response, Status, service::interceptor::InterceptedService, transport::Channel,
 };
 use tracing::{debug, info, instrument};
 
@@ -44,31 +46,39 @@ type BlockProducerClient =
 
 pub struct RpcService {
     store: StoreClient,
-    block_producer: BlockProducerClient,
+    block_producer: Option<BlockProducerClient>,
 }
 
 impl RpcService {
-    pub(super) async fn new(
+    pub(super) fn new(
         store_address: SocketAddr,
-        block_producer_address: SocketAddr,
-    ) -> Result<Self, Error> {
-        let store_url = format!("http://{store_address}");
-        let channel = tonic::transport::Endpoint::try_from(store_url)?.connect().await?;
-        let store = store_client::ApiClient::with_interceptor(channel, OtelInterceptor);
-        info!(target: COMPONENT, store_endpoint = %store_address, "Store client initialized");
+        block_producer_address: Option<SocketAddr>,
+    ) -> Self {
+        let store = {
+            let store_url = format!("http://{store_address}");
+            // SAFETY: The store_url is always valid as it is created from a `SocketAddr`.
+            let channel = tonic::transport::Endpoint::try_from(store_url).unwrap().connect_lazy();
+            let store = store_client::ApiClient::with_interceptor(channel, OtelInterceptor);
+            info!(target: COMPONENT, store_endpoint = %store_address, "Store client initialized");
+            store
+        };
 
-        let block_producer_url = format!("http://{block_producer_address}");
-        let channel = tonic::transport::Endpoint::try_from(block_producer_url)?.connect().await?;
-        let block_producer =
-            block_producer_client::ApiClient::with_interceptor(channel, OtelInterceptor);
+        let block_producer = block_producer_address.map(|block_producer_address| {
+            let block_producer_url = format!("http://{block_producer_address}");
+            // SAFETY: The block_producer_url is always valid as it is created from a `SocketAddr`.
+            let channel =
+                tonic::transport::Endpoint::try_from(block_producer_url).unwrap().connect_lazy();
+            let block_producer =
+                block_producer_client::ApiClient::with_interceptor(channel, OtelInterceptor);
+            info!(
+                target: COMPONENT,
+                block_producer_endpoint = %block_producer_address,
+                "Block producer client initialized",
+            );
+            block_producer
+        });
 
-        info!(
-            target: COMPONENT,
-            block_producer_endpoint = %block_producer_address,
-            "Block producer client initialized",
-        );
-
-        Ok(Self { store, block_producer })
+        Self { store, block_producer }
     }
 }
 
@@ -76,7 +86,7 @@ impl RpcService {
 impl api_server::Api for RpcService {
     #[instrument(
         target = COMPONENT,
-        name = "rpc:check_nullifiers",
+        name = "rpc.server.check_nullifiers",
         skip_all,
         ret(level = "debug"),
         err
@@ -99,7 +109,7 @@ impl api_server::Api for RpcService {
 
     #[instrument(
         target = COMPONENT,
-        name = "rpc:check_nullifiers_by_prefix",
+        name = "rpc.server.check_nullifiers_by_prefix",
         skip_all,
         ret(level = "debug"),
         err
@@ -115,7 +125,7 @@ impl api_server::Api for RpcService {
 
     #[instrument(
         target = COMPONENT,
-        name = "rpc:get_block_header_by_number",
+        name = "rpc.server.get_block_header_by_number",
         skip_all,
         ret(level = "debug"),
         err
@@ -131,7 +141,7 @@ impl api_server::Api for RpcService {
 
     #[instrument(
         target = COMPONENT,
-        name = "rpc:sync_state",
+        name = "rpc.server.sync_state",
         skip_all,
         ret(level = "debug"),
         err
@@ -147,7 +157,7 @@ impl api_server::Api for RpcService {
 
     #[instrument(
         target = COMPONENT,
-        name = "rpc:sync_notes",
+        name = "rpc.server.sync_notes",
         skip_all,
         ret(level = "debug"),
         err
@@ -163,7 +173,7 @@ impl api_server::Api for RpcService {
 
     #[instrument(
         target = COMPONENT,
-        name = "rpc:get_notes_by_id",
+        name = "rpc.server.get_notes_by_id",
         skip_all,
         ret(level = "debug"),
         err
@@ -183,17 +193,32 @@ impl api_server::Api for RpcService {
         self.store.clone().get_notes_by_id(request).await
     }
 
-    #[instrument(target = COMPONENT, name = "rpc:submit_proven_transaction", skip_all, err)]
+    #[instrument(target = COMPONENT, name = "rpc.server.submit_proven_transaction", skip_all, err)]
     async fn submit_proven_transaction(
         &self,
         request: Request<SubmitProvenTransactionRequest>,
     ) -> Result<Response<SubmitProvenTransactionResponse>, Status> {
         debug!(target: COMPONENT, request = ?request.get_ref());
 
+        let Some(block_producer) = &self.block_producer else {
+            return Err(Status::unavailable(
+                "Transaction submission not available in read-only mode",
+            ));
+        };
+
         let request = request.into_inner();
 
         let tx = ProvenTransaction::read_from_bytes(&request.transaction)
             .map_err(|err| Status::invalid_argument(format!("Invalid transaction: {err}")))?;
+
+        // Only allow deployment transactions for new network accounts
+        if tx.account_id().is_network()
+            && !matches!(tx.account_update().details(), AccountUpdateDetails::New(_))
+        {
+            return Err(Status::invalid_argument(
+                "Network transactions may not be submitted by users yet",
+            ));
+        }
 
         let tx_verifier = TransactionVerifier::new(MIN_PROOF_SECURITY_LEVEL);
 
@@ -201,13 +226,13 @@ impl api_server::Api for RpcService {
             Status::invalid_argument(format!("Invalid proof for transaction {}: {err}", tx.id()))
         })?;
 
-        self.block_producer.clone().submit_proven_transaction(request).await
+        block_producer.clone().submit_proven_transaction(request).await
     }
 
     /// Returns details for public (public) account by id.
     #[instrument(
         target = COMPONENT,
-        name = "rpc:get_account_details",
+        name = "rpc.server.get_account_details",
         skip_all,
         ret(level = "debug"),
         err
@@ -232,7 +257,7 @@ impl api_server::Api for RpcService {
 
     #[instrument(
         target = COMPONENT,
-        name = "rpc:get_block_by_number",
+        name = "rpc.server.get_block_by_number",
         skip_all,
         ret(level = "debug"),
         err
@@ -250,7 +275,7 @@ impl api_server::Api for RpcService {
 
     #[instrument(
         target = COMPONENT,
-        name = "rpc:get_account_state_delta",
+        name = "rpc.server.get_account_state_delta",
         skip_all,
         ret(level = "debug"),
         err
@@ -268,7 +293,7 @@ impl api_server::Api for RpcService {
 
     #[instrument(
         target = COMPONENT,
-        name = "rpc:get_account_proofs",
+        name = "rpc.server.get_account_proofs",
         skip_all,
         ret(level = "debug"),
         err
@@ -295,5 +320,42 @@ impl api_server::Api for RpcService {
         }
 
         self.store.clone().get_account_proofs(request).await
+    }
+
+    #[instrument(
+        target = COMPONENT,
+        name = "rpc.server.status",
+        skip_all,
+        ret(level = "debug"),
+        err
+    )]
+    async fn status(&self, request: Request<()>) -> Result<Response<RpcStatusResponse>, Status> {
+        debug!(target: COMPONENT, request = ?request);
+
+        let store_status =
+            self.store.clone().status(Request::new(())).await.map(Response::into_inner).ok();
+        let block_producer_status = if let Some(block_producer) = &self.block_producer {
+            block_producer
+                .clone()
+                .status(Request::new(()))
+                .await
+                .map(Response::into_inner)
+                .ok()
+        } else {
+            None
+        };
+
+        Ok(Response::new(RpcStatusResponse {
+            version: env!("CARGO_PKG_VERSION").to_string(),
+            store_status: store_status.or(Some(StoreStatusResponse {
+                status: "unreachable".to_string(),
+                chain_tip: 0,
+                version: "-".to_string(),
+            })),
+            block_producer_status: block_producer_status.or(Some(BlockProducerStatusResponse {
+                status: "unreachable".to_string(),
+                version: "-".to_string(),
+            })),
+        }))
     }
 }

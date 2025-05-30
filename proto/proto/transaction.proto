@@ -22,3 +22,7 @@ message TransactionSummary {
     account.AccountId account_id = 3;
 }
 
+enum TransactionStatus {
+    COMMITTED = 0;
+    REVERTED = 1;
+}

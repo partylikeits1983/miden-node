@@ -1,6 +1,7 @@
 use std::{
     collections::{BTreeMap, BTreeSet},
     fmt::{Display, Formatter},
+    net::SocketAddr,
     num::NonZeroU32,
 };
 
@@ -28,7 +29,6 @@ use miden_objects::{
     transaction::ProvenTransaction,
     utils::Serializable,
 };
-use miden_processor::crypto::RpoDigest;
 use tonic::{service::interceptor::InterceptedService, transport::Channel};
 use tracing::{debug, info, instrument};
 
@@ -103,7 +103,7 @@ impl TryFrom<GetTransactionInputsResponse> for TransactionInputs {
         let found_unauthenticated_notes = response
             .found_unauthenticated_notes
             .into_iter()
-            .map(|digest| Ok(RpoDigest::try_from(digest)?.into()))
+            .map(|digest| Ok(Digest::try_from(digest)?.into()))
             .collect::<Result<_, ConversionError>>()?;
 
         let current_block_height = response.block_height.into();
@@ -126,14 +126,20 @@ type InnerClient = store_client::ApiClient<InterceptedService<Channel, OtelInter
 /// Interface to the store's gRPC API.
 ///
 /// Essentially just a thin wrapper around the generated gRPC client which improves type safety.
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 pub struct StoreClient {
     inner: InnerClient,
 }
 
 impl StoreClient {
-    /// TODO: this should probably take store connection string and create a connection internally
-    pub fn new(store: InnerClient) -> Self {
+    /// Creates a new store client with a lazy connection.
+    pub fn new(store_address: SocketAddr) -> Self {
+        let store_url = format!("http://{store_address}");
+        // SAFETY: The store_url is always valid as it is created from a `SocketAddr`.
+        let channel = tonic::transport::Endpoint::try_from(store_url).unwrap().connect_lazy();
+        let store = store_client::ApiClient::with_interceptor(channel, OtelInterceptor);
+        info!(target: COMPONENT, store_endpoint = %store_address, "Store client initialized");
+
         Self { inner: store }
     }
 
@@ -163,9 +169,9 @@ impl StoreClient {
     ) -> Result<TransactionInputs, StoreError> {
         let message = GetTransactionInputsRequest {
             account_id: Some(proven_tx.account_id().into()),
-            nullifiers: proven_tx.get_nullifiers().map(Into::into).collect(),
+            nullifiers: proven_tx.nullifiers().map(Into::into).collect(),
             unauthenticated_notes: proven_tx
-                .get_unauthenticated_notes()
+                .unauthenticated_notes()
                 .map(|note| note.id().into())
                 .collect(),
         };

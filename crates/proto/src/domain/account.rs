@@ -4,10 +4,12 @@ use miden_node_utils::formatting::format_opt;
 use miden_objects::{
     Digest,
     account::{Account, AccountHeader, AccountId},
-    block::BlockNumber,
-    crypto::{hash::rpo::RpoDigest, merkle::MerklePath},
-    utils::{Deserializable, Serializable},
+    block::{AccountWitness, BlockNumber},
+    crypto::hash::rpo::RpoDigest,
+    note::{NoteExecutionMode, NoteTag},
+    utils::{Deserializable, DeserializationError, Serializable},
 };
+use thiserror::Error;
 
 use super::try_convert;
 use crate::{
@@ -155,16 +157,16 @@ impl TryInto<StorageMapKeysProof> for proto::requests::get_account_proofs_reques
 #[derive(Clone, Debug)]
 pub struct AccountWitnessRecord {
     pub account_id: AccountId,
-    pub initial_state_commitment: Digest,
-    pub proof: MerklePath,
+    pub witness: AccountWitness,
 }
 
 impl From<AccountWitnessRecord> for proto::responses::AccountWitness {
     fn from(from: AccountWitnessRecord) -> Self {
         Self {
             account_id: Some(from.account_id.into()),
-            initial_state_commitment: Some(from.initial_state_commitment.into()),
-            proof: Some(Into::into(&from.proof)),
+            witness_id: Some(from.witness.id().into()),
+            commitment: Some(from.witness.state_commitment().into()),
+            path: Some(from.witness.into_proof().into_parts().0.into()),
         }
     }
 }
@@ -175,22 +177,33 @@ impl TryFrom<proto::responses::AccountWitness> for AccountWitnessRecord {
     fn try_from(
         account_witness_record: proto::responses::AccountWitness,
     ) -> Result<Self, Self::Error> {
+        let witness_id = account_witness_record
+            .witness_id
+            .ok_or(proto::responses::AccountWitness::missing_field(stringify!(witness_id)))?
+            .try_into()?;
+        let commitment = account_witness_record
+            .commitment
+            .ok_or(proto::responses::AccountWitness::missing_field(stringify!(commitment)))?
+            .try_into()?;
+        let path = account_witness_record
+            .path
+            .as_ref()
+            .ok_or(proto::responses::AccountWitness::missing_field(stringify!(path)))?
+            .try_into()?;
+
+        let witness = AccountWitness::new(witness_id, commitment, path).map_err(|err| {
+            ConversionError::deserialization_error(
+                "AccountWitness",
+                DeserializationError::InvalidValue(err.to_string()),
+            )
+        })?;
+
         Ok(Self {
             account_id: account_witness_record
                 .account_id
                 .ok_or(proto::responses::AccountWitness::missing_field(stringify!(account_id)))?
                 .try_into()?,
-            initial_state_commitment: account_witness_record
-                .initial_state_commitment
-                .ok_or(proto::responses::AccountWitness::missing_field(stringify!(
-                    account_commitment
-                )))?
-                .try_into()?,
-            proof: account_witness_record
-                .proof
-                .as_ref()
-                .ok_or(proto::responses::AccountWitness::missing_field(stringify!(proof)))?
-                .try_into()?,
+            witness,
         })
     }
 }
@@ -267,4 +280,78 @@ impl TryFrom<proto::responses::AccountTransactionInputRecord> for AccountState {
 
         Ok(Self { account_id, account_commitment })
     }
+}
+
+// NETWORK ACCOUNT PREFIX
+// ================================================================================================
+
+pub type AccountPrefix = u32;
+
+/// Newtype wrapper for network account prefix.
+/// Provides type safety for accounts that are meant for network execution.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Hash)]
+pub struct NetworkAccountPrefix(u32);
+
+impl NetworkAccountPrefix {
+    pub fn inner(&self) -> u32 {
+        self.0
+    }
+}
+
+impl From<NetworkAccountPrefix> for u32 {
+    fn from(value: NetworkAccountPrefix) -> Self {
+        value.inner()
+    }
+}
+
+impl TryFrom<u32> for NetworkAccountPrefix {
+    type Error = NetworkAccountError;
+
+    fn try_from(value: u32) -> Result<Self, Self::Error> {
+        if value >> 30 != 0 {
+            return Err(NetworkAccountError::InvalidPrefix(value));
+        }
+        Ok(NetworkAccountPrefix(value))
+    }
+}
+
+impl TryFrom<AccountId> for NetworkAccountPrefix {
+    type Error = NetworkAccountError;
+
+    fn try_from(id: AccountId) -> Result<Self, Self::Error> {
+        if !id.is_network() {
+            return Err(NetworkAccountError::NotNetworkAccount(id));
+        }
+        let prefix = get_account_id_tag_prefix(id);
+        Ok(NetworkAccountPrefix(prefix))
+    }
+}
+
+impl TryFrom<NoteTag> for NetworkAccountPrefix {
+    type Error = NetworkAccountError;
+
+    fn try_from(tag: NoteTag) -> Result<Self, Self::Error> {
+        if tag.execution_mode() != NoteExecutionMode::Network || !tag.is_single_target() {
+            return Err(NetworkAccountError::InvalidExecutionMode(tag));
+        }
+
+        let tag_inner: u32 = tag.into();
+        assert!(tag_inner >> 30 == 0, "first 2 bits have to be 0");
+        Ok(NetworkAccountPrefix(tag_inner))
+    }
+}
+
+#[derive(Debug, Error)]
+pub enum NetworkAccountError {
+    #[error("account ID {0} is not a valid network account ID")]
+    NotNetworkAccount(AccountId),
+    #[error("note tag {0} is not valid for network account execution")]
+    InvalidExecutionMode(NoteTag),
+    #[error("note prefix should be 30-bit long ({0} has non-zero in the 2 most significant bits)")]
+    InvalidPrefix(u32),
+}
+
+/// Gets the 30-bit prefix of the account ID.
+fn get_account_id_tag_prefix(id: AccountId) -> AccountPrefix {
+    (id.prefix().as_u64() >> 34) as AccountPrefix
 }
