@@ -322,7 +322,7 @@ impl api_server::Api for StoreApi {
         request: Request<GetAccountDetailsRequest>,
     ) -> Result<Response<GetAccountDetailsResponse>, Status> {
         let request = request.into_inner();
-        let account_id = read_account_id(request.account_id).map_err(|err| *err)?;
+        let account_id = read_account_id(request.account_id)?;
         let account_info: AccountInfo = self.state.get_account_details(account_id).await?;
 
         Ok(Response::new(GetAccountDetailsResponse {
@@ -472,7 +472,7 @@ impl api_server::Api for StoreApi {
 
         debug!(target: COMPONENT, ?request);
 
-        let account_id = read_account_id(request.account_id).map_err(|err| *err)?;
+        let account_id = read_account_id(request.account_id)?;
         let nullifiers = validate_nullifiers(&request.nullifiers)?;
         let unauthenticated_notes = validate_notes(&request.unauthenticated_notes)?;
 
@@ -578,7 +578,7 @@ impl api_server::Api for StoreApi {
 
         debug!(target: COMPONENT, ?request);
 
-        let account_id = read_account_id(request.account_id).map_err(|err| *err)?;
+        let account_id = read_account_id(request.account_id)?;
         let delta = self
             .state
             .get_account_state_delta(
@@ -659,13 +659,15 @@ fn invalid_argument<E: core::fmt::Display>(err: E) -> Status {
     Status::invalid_argument(err.to_string())
 }
 
-fn read_account_id(id: Option<generated::account::AccountId>) -> Result<AccountId, Box<Status>> {
+#[allow(clippy::result_large_err)]
+fn read_account_id(id: Option<generated::account::AccountId>) -> Result<AccountId, Status> {
     id.ok_or(invalid_argument("missing account ID"))?
         .try_into()
-        .map_err(|err| invalid_argument(format!("invalid account ID: {err}")).into())
+        .map_err(|err| invalid_argument(format!("invalid account ID: {err}")))
 }
 
 #[instrument(target = COMPONENT, skip_all, err)]
+#[allow(clippy::result_large_err)]
 fn read_account_ids(
     account_ids: &[generated::account::AccountId],
 ) -> Result<Vec<AccountId>, Status> {
@@ -678,6 +680,7 @@ fn read_account_ids(
 }
 
 #[instrument(target = COMPONENT, skip_all, err)]
+#[allow(clippy::result_large_err)]
 fn validate_nullifiers(nullifiers: &[generated::digest::Digest]) -> Result<Vec<Nullifier>, Status> {
     nullifiers
         .iter()
@@ -688,6 +691,7 @@ fn validate_nullifiers(nullifiers: &[generated::digest::Digest]) -> Result<Vec<N
 }
 
 #[instrument(target = COMPONENT, skip_all, err)]
+#[allow(clippy::result_large_err)]
 fn validate_notes(notes: &[generated::digest::Digest]) -> Result<Vec<NoteId>, Status> {
     notes
         .iter()
