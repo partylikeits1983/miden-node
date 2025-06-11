@@ -8,6 +8,7 @@
 
 ### Changes
 
+- Separated the store API into three separate services (#932).
 - Added a faucet Dockerfile (#933).
 
 ### Fixes
