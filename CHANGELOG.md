@@ -7,6 +7,16 @@
 - Added support for gRPC server side reflection to all components (#949).
 - Added support for TLS to `miden-proving-service-client` (#968).
 
+## v0.9.2 (2025-06-12)
+
+- Refresh Cargo.lock file.
+
+## v0.9.1 (2025-06-10)
+
+- Refresh Cargo.lock file (#944).
+
+## v0.9.0 (2025-05-30)
+
 ### Changes
 
 - Separated the store API into three separate services (#932).
