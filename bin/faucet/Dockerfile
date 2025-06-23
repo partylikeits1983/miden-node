@@ -1,7 +1,11 @@
 FROM rust:1.87-slim-bullseye AS builder
 
 WORKDIR /app
-COPY . .
+COPY ./Cargo.toml .
+COPY ./Cargo.lock .
+COPY ./bin ./bin
+COPY ./crates ./crates
+COPY ./proto ./proto
 
 RUN cargo install --path bin/faucet --locked
 
