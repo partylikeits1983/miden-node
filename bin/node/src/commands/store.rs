@@ -183,7 +183,7 @@ impl StoreCommand {
         Ok(AccountFile::new(
             account,
             Some(account_seed),
-            AuthSecretKey::RpoFalcon512(secret),
+            vec![AuthSecretKey::RpoFalcon512(secret)],
         ))
     }
 }
