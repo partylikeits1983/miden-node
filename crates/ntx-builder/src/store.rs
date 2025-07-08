@@ -1,5 +1,5 @@
 use miden_node_proto::{
-    domain::note::NetworkNote,
+    domain::{account::NetworkAccountPrefix, note::NetworkNote},
     errors::{ConversionError, MissingFieldHelper},
     generated::{
         requests::{
@@ -15,7 +15,6 @@ use miden_objects::{
     account::Account,
     block::{BlockHeader, BlockNumber},
     crypto::merkle::{MmrPeaks, PartialMmr},
-    note::NoteTag,
 };
 use miden_tx::utils::Deserializable;
 use thiserror::Error;
@@ -134,12 +133,11 @@ impl StoreClient {
     }
 
     #[instrument(target = COMPONENT, name = "store.client.get_network_account", skip_all, err)]
-    pub async fn get_network_account_by_tag(
+    pub async fn get_network_account(
         &self,
-        note_tag: NoteTag,
+        prefix: NetworkAccountPrefix,
     ) -> Result<Option<Account>, StoreError> {
-        let tag_inner = note_tag.as_u32();
-        let request = GetNetworkAccountDetailsByPrefixRequest { account_id_prefix: tag_inner };
+        let request = GetNetworkAccountDetailsByPrefixRequest { account_id_prefix: prefix.inner() };
 
         let store_response = self
             .inner
