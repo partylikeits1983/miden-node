@@ -1,0 +1,6 @@
+[workspace]
+release_always = true # Without the tracking PR, it would never trigger unless `true`.
+changelog_update = false # For now we have our own changelog.
+
+git_release_enable = false
+git_tag_enable = false
