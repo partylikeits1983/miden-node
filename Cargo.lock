@@ -2637,6 +2637,7 @@ dependencies = [
  "tonic-build",
  "tonic-health",
  "tonic-web",
+ "tower-http",
  "tracing",
  "uuid",
 ]
