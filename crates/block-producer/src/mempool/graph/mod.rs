@@ -170,7 +170,7 @@ impl<K: Ord + Copy + Display + Debug, V: Clone> DependencyGraph<K, V> {
         Ok(())
     }
 
-    /// Reverts the nodes __and their descendents__, requeueing them for processing.
+    /// Reverts the nodes __and their descendents__, requeuing them for processing.
     ///
     /// Descendents which are pending remain unchanged.
     ///
@@ -415,5 +415,25 @@ impl<K: Ord + Copy + Display + Debug, V: Clone> DependencyGraph<K, V> {
     /// Returns true if the node exists, in either the pending or non-pending sets.
     fn contains(&self, key: &K) -> bool {
         self.pending.contains(key) || self.vertices.contains_key(key)
+    }
+
+    /// The amount of nodes which are in the pending state.
+    pub fn num_pending(&self) -> usize {
+        self.pending.len()
+    }
+
+    /// The amount of nodes which are in the processed state.
+    pub fn num_processed(&self) -> usize {
+        self.processed.len()
+    }
+
+    /// The total amount of nodes in the graph.
+    pub fn len(&self) -> usize {
+        self.vertices.len()
+    }
+
+    /// The amount of root nodes.
+    pub fn num_roots(&self) -> usize {
+        self.roots.len()
     }
 }

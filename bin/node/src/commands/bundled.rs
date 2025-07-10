@@ -1,20 +1,18 @@
-use std::{collections::HashMap, num::NonZeroUsize, path::PathBuf, time::Duration};
+use std::{collections::HashMap, path::PathBuf, sync::Arc};
 
 use anyhow::Context;
 use miden_node_block_producer::BlockProducer;
 use miden_node_ntx_builder::NetworkTransactionBuilder;
 use miden_node_rpc::Rpc;
-use miden_node_store::{DataDirectory, Store};
+use miden_node_store::Store;
 use miden_node_utils::grpc::UrlExt;
-use tokio::{net::TcpListener, task::JoinSet};
+use tokio::{net::TcpListener, sync::Barrier, task::JoinSet};
 use url::Url;
 
-use super::{
-    DEFAULT_BATCH_INTERVAL_MS, DEFAULT_BLOCK_INTERVAL_MS, DEFAULT_MONITOR_INTERVAL_MS,
-    DEFAULT_NTX_TICKER_INTERVAL_MS, ENV_BATCH_PROVER_URL, ENV_BLOCK_PROVER_URL, ENV_DATA_DIRECTORY,
-    ENV_ENABLE_OTEL, ENV_NTX_PROVER_URL, ENV_RPC_URL, parse_duration_ms,
+use super::{ENV_DATA_DIRECTORY, ENV_RPC_URL};
+use crate::commands::{
+    BlockProducerConfig, ENV_ENABLE_OTEL, ENV_GENESIS_CONFIG_FILE, NtxBuilderConfig,
 };
-use crate::system_monitor::SystemMonitor;
 
 #[derive(clap::Subcommand)]
 #[expect(clippy::large_enum_variant, reason = "This is a single use enum")]
@@ -32,6 +30,9 @@ pub enum BundledCommand {
         // Directory to write the account data to.
         #[arg(long, value_name = "DIR")]
         accounts_directory: PathBuf,
+        /// Constructs the genesis block from the given toml file.
+        #[arg(long, env = ENV_GENESIS_CONFIG_FILE, value_name = "FILE")]
+        genesis_config_file: Option<PathBuf>,
     },
 
     /// Runs all three node components in the same process.
@@ -47,78 +48,34 @@ pub enum BundledCommand {
         #[arg(long = "data-directory", env = ENV_DATA_DIRECTORY, value_name = "DIR")]
         data_directory: PathBuf,
 
-        /// The remote transaction prover's gRPC url, used for the ntx builder. If unset,
-        /// will default to running a prover in-process which is expensive.
-        #[arg(long = "tx-prover.url", env = ENV_NTX_PROVER_URL, value_name = "URL")]
-        tx_prover_url: Option<Url>,
+        #[command(flatten)]
+        block_producer: BlockProducerConfig,
 
-        /// Disable spawning the network transaction builder.
-        #[arg(long = "no-ntb", default_value_t = false)]
-        no_ntb: bool,
-
-        /// The remote batch prover's gRPC url. If unset, will default to running a prover
-        /// in-process which is expensive.
-        #[arg(long = "batch-prover.url", env = ENV_BATCH_PROVER_URL, value_name = "URL")]
-        batch_prover_url: Option<Url>,
-
-        /// The remote block prover's gRPC url. If unset, will default to running a prover
-        /// in-process which is expensive.
-        #[arg(long = "block-prover.url", env = ENV_BLOCK_PROVER_URL, value_name = "URL")]
-        block_prover_url: Option<Url>,
+        #[command(flatten)]
+        ntx_builder: NtxBuilderConfig,
 
         /// Enables the exporting of traces for OpenTelemetry.
         ///
         /// This can be further configured using environment variables as defined in the official
         /// OpenTelemetry documentation. See our operator manual for further details.
-        #[arg(long = "enable-otel", default_value_t = false, env = ENV_ENABLE_OTEL, value_name = "bool")]
-        open_telemetry: bool,
-
-        /// Interval at which to produce blocks in milliseconds.
-        #[arg(
-            long = "block.interval",
-            default_value = DEFAULT_BLOCK_INTERVAL_MS,
-            value_parser = parse_duration_ms,
-            value_name = "MILLISECONDS"
-        )]
-        block_interval: Duration,
-
-        /// Interval at which to run the network transaction builder's ticker.
-        #[arg(
-            long = "ntb.interval",
-            default_value = DEFAULT_NTX_TICKER_INTERVAL_MS,
-            value_parser = parse_duration_ms,
-            value_name = "MILLISECONDS"
-        )]
-        ntx_ticker_interval: Duration,
-
-        /// Interval at which to procude batches in milliseconds.
-        #[arg(
-            long = "batch.interval",
-            default_value = DEFAULT_BATCH_INTERVAL_MS,
-            value_parser = parse_duration_ms,
-            value_name = "MILLISECONDS"
-        )]
-        batch_interval: Duration,
-
-        /// Interval at which to monitor the system in milliseconds.
-        #[arg(
-            long = "monitor.interval",
-            default_value = DEFAULT_MONITOR_INTERVAL_MS,
-            value_parser = parse_duration_ms,
-            value_name = "MILLISECONDS"
-        )]
-        monitor_interval: Duration,
+        #[arg(long = "enable-otel", default_value_t = false, env = ENV_ENABLE_OTEL, value_name = "BOOL")]
+        enable_otel: bool,
     },
 }
 
 impl BundledCommand {
     pub async fn handle(self) -> anyhow::Result<()> {
         match self {
-            BundledCommand::Bootstrap { data_directory, accounts_directory } => {
+            BundledCommand::Bootstrap {
+                data_directory,
+                accounts_directory,
+                genesis_config_file,
+            } => {
                 // Currently the bundled bootstrap is identical to the store's bootstrap.
                 crate::commands::store::StoreCommand::Bootstrap {
                     data_directory,
                     accounts_directory,
+                    genesis_config_file,
                 }
                 .handle()
                 .await
@@ -127,49 +84,21 @@ impl BundledCommand {
             BundledCommand::Start {
                 rpc_url,
                 data_directory,
-                batch_prover_url,
-                block_prover_url,
-                // Note: open-telemetry is handled in main.
-                open_telemetry: _,
-                block_interval,
-                batch_interval,
-                tx_prover_url,
-                monitor_interval,
-                ntx_ticker_interval,
-                no_ntb,
-            } => {
-                Self::start(
-                    rpc_url,
-                    data_directory,
-                    no_ntb,
-                    batch_prover_url,
-                    block_prover_url,
-                    tx_prover_url,
-                    batch_interval,
-                    block_interval,
-                    monitor_interval,
-                    ntx_ticker_interval,
-                )
-                .await
-            },
+                block_producer,
+                ntx_builder,
+                enable_otel: _,
+            } => Self::start(rpc_url, data_directory, ntx_builder, block_producer).await,
         }
     }
 
-    #[allow(clippy::too_many_arguments)]
     #[allow(clippy::too_many_lines)]
     async fn start(
         rpc_url: Url,
         data_directory: PathBuf,
-        no_ntb: bool,
-        batch_prover_url: Option<Url>,
-        block_prover_url: Option<Url>,
-        tx_prover_url: Option<Url>,
-        batch_interval: Duration,
-        block_interval: Duration,
-        monitor_interval: Duration,
-        ntx_ticker_interval: Duration,
+        ntx_builder: NtxBuilderConfig,
+        block_producer: BlockProducerConfig,
     ) -> anyhow::Result<()> {
-        let should_start_ntb = !no_ntb;
+        let should_start_ntb = !ntx_builder.disabled;
         // Start listening on all gRPC urls so that inter-component connections can be created
         // before each component is fully started up.
         //
@@ -179,21 +108,32 @@ impl BundledCommand {
         let grpc_rpc = TcpListener::bind(grpc_rpc)
             .await
             .context("Failed to bind to RPC gRPC endpoint")?;
-        let grpc_store = TcpListener::bind("127.0.0.1:0")
-            .await
-            .context("Failed to bind to store gRPC endpoint")?;
-        let store_address =
-            grpc_store.local_addr().context("Failed to retrieve the store's gRPC address")?;
+
         let block_producer_address = TcpListener::bind("127.0.0.1:0")
             .await
             .context("Failed to bind to block-producer gRPC endpoint")?
             .local_addr()
             .context("Failed to retrieve the block-producer's gRPC address")?;
-        let ntx_builder_address = TcpListener::bind("127.0.0.1:0")
+
+        // Store addresses for each exposed API
+        let store_rpc_listener = TcpListener::bind("127.0.0.1:0")
             .await
-            .context("Failed to bind to network transaction builder gRPC endpoint")?
+            .context("Failed to bind to store RPC gRPC endpoint")?;
+        let store_ntx_builder_listener = TcpListener::bind("127.0.0.1:0")
+            .await
+            .context("Failed to bind to store ntx-builder gRPC endpoint")?;
+        let store_block_producer_listener = TcpListener::bind("127.0.0.1:0")
+            .await
+            .context("Failed to bind to store block-producer gRPC endpoint")?;
+        let store_rpc_address = store_rpc_listener
             .local_addr()
-            .context("Failed to retrieve the network transaction builder's gRPC address")?;
+            .context("Failed to retrieve the store's RPC gRPC address")?;
+        let store_block_producer_address = store_block_producer_listener
+            .local_addr()
+            .context("Failed to retrieve the store's block-producer gRPC address")?;
+        let store_ntx_builder_address = store_ntx_builder_listener
+            .local_addr()
+            .context("Failed to retrieve the store's ntx-builder gRPC address")?;
 
         let mut join_set = JoinSet::new();
         // Start store. The store endpoint is available after loading completes.
@@ -201,7 +141,9 @@ impl BundledCommand {
         let store_id = join_set
             .spawn(async move {
                 Store {
-                    listener: grpc_store,
+                    rpc_listener: store_rpc_listener,
+                    block_producer_listener: store_block_producer_listener,
+                    ntx_builder_listener: store_ntx_builder_listener,
                     data_directory: data_directory_clone,
                 }
                 .serve()
@@ -210,27 +152,34 @@ impl BundledCommand {
             })
             .id();
 
-        // Start network transaction builder. The endpoint is available after loading completes.
-        // SAFETY: socket addr yields valid URLs
-        let store_url =
-            Url::parse(&format!("http://{}:{}/", store_address.ip(), store_address.port()))
-                .unwrap();
+        // A sync point between the ntb and block-producer components.
+        let checkpoint = if should_start_ntb {
+            Barrier::new(2)
+        } else {
+            Barrier::new(1)
+        };
+        let checkpoint = Arc::new(checkpoint);
 
         // Start block-producer. The block-producer's endpoint is available after loading completes.
         let block_producer_id = join_set
-            .spawn(async move {
-                BlockProducer {
-                    block_producer_address,
-                    store_address,
-                    ntx_builder_address: should_start_ntb.then_some(ntx_builder_address),
-                    batch_prover_url,
-                    block_prover_url,
-                    batch_interval,
-                    block_interval,
+            .spawn({
+                let checkpoint = Arc::clone(&checkpoint);
+                async move {
+                    BlockProducer {
+                        block_producer_address,
+                        store_address: store_block_producer_address,
+                        batch_prover_url: block_producer.batch_prover_url,
+                        block_prover_url: block_producer.block_prover_url,
+                        batch_interval: block_producer.batch_interval,
+                        block_interval: block_producer.block_interval,
+                        max_batches_per_block: block_producer.max_batches_per_block,
+                        max_txs_per_batch: block_producer.max_txs_per_batch,
+                        production_checkpoint: checkpoint,
+                    }
+                    .serve()
+                    .await
+                    .context("failed while serving block-producer component")
                 }
-                .serve()
-                .await
-                .context("failed while serving block-producer component")
             })
             .id();
 
@@ -239,7 +188,7 @@ impl BundledCommand {
             .spawn(async move {
                 Rpc {
                     listener: grpc_rpc,
-                    store: store_address,
+                    store: store_rpc_address,
                     block_producer: Some(block_producer_address),
                 }
                 .serve()
@@ -248,13 +197,6 @@ impl BundledCommand {
             })
             .id();
 
-        // Start system monitor.
-        let data_dir =
-            DataDirectory::load(data_directory.clone()).context("failed to load data directory")?;
-        SystemMonitor::new(monitor_interval)
-            .with_store_metrics(data_dir)
-            .run_with_supervisor();
-
         // Lookup table so we can identify the failed component.
         let mut component_ids = HashMap::from([
             (store_id, "store"),
@@ -262,18 +204,22 @@ impl BundledCommand {
             (rpc_id, "rpc"),
         ]);
 
+        // Start network transaction builder. The endpoint is available after loading completes.
+        // SAFETY: socket addr yields valid URLs
+        let store_ntx_builder_url =
+            Url::parse(&format!("http://{store_ntx_builder_address}")).unwrap();
+
         if should_start_ntb {
             let id = join_set
                 .spawn(async move {
                     NetworkTransactionBuilder {
-                        ntx_builder_address,
-                        store_url,
+                        store_url: store_ntx_builder_url,
                         block_producer_address,
-                        tx_prover_url,
-                        ticker_interval: ntx_ticker_interval,
-                        account_cache_capacity: NonZeroUsize::new(128).unwrap(),
+                        tx_prover_url: ntx_builder.tx_prover_url,
+                        ticker_interval: ntx_builder.ticker_interval,
+                        bp_checkpoint: checkpoint,
                     }
-                    .serve_once()
+                    .serve_new()
                     .await
                     .context("failed while serving ntx builder component")
                 })
@@ -300,8 +246,8 @@ impl BundledCommand {
     }
 
     pub fn is_open_telemetry_enabled(&self) -> bool {
-        if let Self::Start { open_telemetry, .. } = self {
-            *open_telemetry
+        if let Self::Start { enable_otel, .. } = self {
+            *enable_otel
         } else {
             false
         }

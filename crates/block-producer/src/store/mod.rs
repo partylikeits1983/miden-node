@@ -17,7 +17,7 @@ use miden_node_proto::{
             GetBlockInputsRequest, GetTransactionInputsRequest,
         },
         responses::{GetTransactionInputsResponse, NullifierTransactionInputRecord},
-        store::api_client as store_client,
+        store::block_producer_client as store_client,
     },
 };
 use miden_node_utils::{formatting::format_opt, tracing::grpc::OtelInterceptor};
@@ -121,9 +121,9 @@ impl TryFrom<GetTransactionInputsResponse> for TransactionInputs {
 // STORE CLIENT
 // ================================================================================================
 
-type InnerClient = store_client::ApiClient<InterceptedService<Channel, OtelInterceptor>>;
+type InnerClient = store_client::BlockProducerClient<InterceptedService<Channel, OtelInterceptor>>;
 
-/// Interface to the store's gRPC API.
+/// Interface to the store's block-producer gRPC API.
 ///
 /// Essentially just a thin wrapper around the generated gRPC client which improves type safety.
 #[derive(Clone, Debug)]
@@ -137,7 +137,7 @@ impl StoreClient {
         let store_url = format!("http://{store_address}");
         // SAFETY: The store_url is always valid as it is created from a `SocketAddr`.
         let channel = tonic::transport::Endpoint::try_from(store_url).unwrap().connect_lazy();
-        let store = store_client::ApiClient::with_interceptor(channel, OtelInterceptor);
+        let store = store_client::BlockProducerClient::with_interceptor(channel, OtelInterceptor);
         info!(target: COMPONENT, store_endpoint = %store_address, "Store client initialized");
 
         Self { inner: store }
