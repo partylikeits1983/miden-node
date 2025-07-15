@@ -4,7 +4,7 @@
 
 ### Fixes
 
-- Network accounts are disabled after one transaction (#1086).
+- Network accounts are disabled after one transaction ([#1086](https://github.com/0xMiden/miden-node/pull/1086)).
 
 ## v0.10.0 (2025-07-10)
 

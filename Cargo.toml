@@ -26,7 +26,7 @@ license      = "MIT"
 readme       = "README.md"
 repository   = "https://github.com/0xMiden/miden-node"
 rust-version = "1.87"
-version      = "0.10.0"
+version      = "0.10.1"
 
 # Optimise the cryptography for faster tests involving account creation.
 [profile.test.package.miden-crypto]
